@@ -7,6 +7,7 @@ from datetime import timedelta, datetime
 from time import sleep
 
 import docker.client
+import requests
 from tabulate import tabulate
 
 from db import get_db_session
@@ -57,6 +58,7 @@ def get_disk_space_stats(folder):
 def tick(cli):
     stats = get_stats(cli)
     store_stats_in_mysql(stats)
+    send_stats_to_betterstack(stats)
     enforce_data_retention(cli)
 
 
@@ -71,57 +73,6 @@ def main():
         sleep(SAMPLE_INTERVAL)
 
 
-def store_stats_in_mysql(stats):
-    print("Storing stats in MySQL")
-    print()
-    print()
-
-    with get_db_session() as db_session:
-        for stat in stats:
-            if "cpu_usage" in stat:
-                db_session.add(DockerStatsDbModel(
-                    container_id=stat["container_id"],
-                    container_name=stat["container_name"],
-                    stat_name="cpu_usage",
-                    stat_value=stat["cpu_usage"],
-                    timestamp=datetime.utcnow()
-                ))
-
-            if "memory_usage" in stat:
-                db_session.add(DockerStatsDbModel(
-                    container_id=stat["container_id"],
-                    container_name=stat["container_name"],
-                    stat_name="memory_usage",
-                    stat_value=stat["memory_usage"],
-                    timestamp=datetime.utcnow()
-                ))
-
-            if "disk_usage" in stat:
-                db_session.add(DockerStatsDbModel(
-                    container_id=stat["container_id"],
-                    container_name=stat["container_name"],
-                    stat_name="disk_usage",
-                    stat_value=stat["disk_usage"],
-                    timestamp=datetime.utcnow()
-                ))
-
-        db_session.commit()
-
-    print("Done")
-    print()
-
-
-def enforce_data_retention(cli):
-    print("Enforcing data retention")
-    with get_db_session() as db_session:
-        db_session.query(DockerStatsDbModel).filter(
-            DockerStatsDbModel.timestamp < (datetime.utcnow() - timedelta(seconds=DATA_RETENTION))
-        ).delete()
-        db_session.commit()
-    print("Done")
-    print()
-
-
 def get_stats(cli):
     ret = []
 
@@ -131,8 +82,15 @@ def get_stats(cli):
         ret.append({
             "container_id": container.id,
             "container_name": container.name,
-            "cpu_usage": calculate_cpu_usage(stats),
-            "memory_usage": calculate_memory_usage(stats),
+            "stat_name": "cpu_usage",
+            "stat_value": calculate_cpu_usage(stats),
+        })
+
+        ret.append({
+            "container_id": container.id,
+            "container_name": container.name,
+            "stat_name": "memory_usage",
+            "stat_value": calculate_memory_usage(stats),
         })
 
     for key, folder in os.environ.items():
@@ -147,10 +105,66 @@ def get_stats(cli):
         ret.append({
             "container_id": "host_os",
             "container_name": name_for_stat,
-            "disk_usage": disk_stats["percent"]
+            "stat_name": "disk_usage",
+            "stat_value": disk_stats["percent"]
         })
 
     return ret
+
+
+def store_stats_in_mysql(stats):
+    print("Storing stats in MySQL")
+    print()
+    print()
+
+    with get_db_session() as db_session:
+        for stat in stats:
+            db_session.add(DockerStatsDbModel(
+                container_id=stat["container_id"],
+                container_name=stat["container_name"],
+                stat_name=stat["stat_name"],
+                stat_value=stat["stat_value"],
+                timestamp=datetime.utcnow()
+            ))
+
+        db_session.commit()
+
+    print("Done")
+    print()
+
+
+def send_stats_to_betterstack(stats):
+    if not os.environ.get("BETTER_STACK_TOKEN"):
+        return
+
+    auth_token = os.environ.get("BETTER_STACK_TOKEN")
+
+    print("Sending stats to BetterStack")
+    for stat in stats:
+        requests.post(
+            "https://in.logs.betterstack.com",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}"
+            },
+            json={
+                "dt": datetime.utcnow().strftime("%Y-%m-%d %T UTC"),
+                "message": json.dumps(stat)
+            },
+        )
+
+
+def enforce_data_retention(cli):
+    print("Enforcing data retention")
+    with get_db_session() as db_session:
+        db_session.query(DockerStatsDbModel).filter(
+            DockerStatsDbModel.timestamp < (datetime.utcnow() - timedelta(seconds=DATA_RETENTION))
+        ).delete()
+        db_session.commit()
+    print("Done")
+    print()
+
+
 
 
 if __name__ == "__main__":
