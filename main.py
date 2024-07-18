@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import traceback
 from datetime import timedelta, datetime
@@ -43,6 +44,16 @@ def calculate_cpu_usage(container_stats):
     return cpu_percent
 
 
+def get_disk_space_stats(folder):
+    total, used, free = shutil.disk_usage(folder)
+    return {
+        "total": total,
+        "used": used,
+        "free": free,
+        "percent": (used / total) * 100
+    }
+
+
 def tick(cli):
     stats = get_stats(cli)
     store_stats_in_mysql(stats)
@@ -67,21 +78,33 @@ def store_stats_in_mysql(stats):
 
     with get_db_session() as db_session:
         for stat in stats:
-            db_session.add(DockerStatsDbModel(
-                container_id=stat["container_id"],
-                container_name=stat["container_name"],
-                stat_name="cpu_usage",
-                stat_value=stat["cpu_usage"],
-                timestamp=datetime.utcnow()
-            ))
+            if "cpu_usage" in stat:
+                db_session.add(DockerStatsDbModel(
+                    container_id=stat["container_id"],
+                    container_name=stat["container_name"],
+                    stat_name="cpu_usage",
+                    stat_value=stat["cpu_usage"],
+                    timestamp=datetime.utcnow()
+                ))
 
-            db_session.add(DockerStatsDbModel(
-                container_id=stat["container_id"],
-                container_name=stat["container_name"],
-                stat_name="memory_usage",
-                stat_value=stat["memory_usage"],
-                timestamp=datetime.utcnow()
-            ))
+            if "memory_usage" in stat:
+                db_session.add(DockerStatsDbModel(
+                    container_id=stat["container_id"],
+                    container_name=stat["container_name"],
+                    stat_name="memory_usage",
+                    stat_value=stat["memory_usage"],
+                    timestamp=datetime.utcnow()
+                ))
+
+            if "disk_usage" in stat:
+                db_session.add(DockerStatsDbModel(
+                    container_id=stat["container_id"],
+                    container_name=stat["container_name"],
+                    stat_name="disk_usage",
+                    stat_value=stat["disk_usage"],
+                    timestamp=datetime.utcnow()
+                ))
+
         db_session.commit()
 
     print("Done")
@@ -110,6 +133,21 @@ def get_stats(cli):
             "container_name": container.name,
             "cpu_usage": calculate_cpu_usage(stats),
             "memory_usage": calculate_memory_usage(stats),
+        })
+
+    for key, folder in os.environ.items():
+        if key == "TRACK_DISK_SPACE":
+            name_for_stat = "main"
+        elif key.startswith("TRACK_DISK_SPACE_"):
+            name_for_stat = key[len("TRACK_DISK_SPACE_"):].lower().replace("_", " ")
+        else:
+            continue
+
+        disk_stats = get_disk_space_stats(folder)
+        ret.append({
+            "container_id": "host_os",
+            "container_name": name_for_stat,
+            "disk_usage": disk_stats["percent"]
         })
 
     return ret
