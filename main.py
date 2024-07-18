@@ -8,7 +8,6 @@ from time import sleep
 
 import docker.client
 import requests
-from tabulate import tabulate
 
 from db import get_db_session
 from db_models.docker_stats_db_model import DockerStatsDbModel
